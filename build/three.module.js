@@ -34427,13 +34427,25 @@ Object.assign(ImageLoader.prototype, {
 
 			scope.manager.itemStart(url);
 
-			setTimeout(function () {
+			// ADDED check if image from Cache is loaded, since we add them to the cache on creation to avoid duplicate parallel requests
+			if (cached.isLoaded) {
+				setTimeout(function () {
 
-				if (onLoad) onLoad(cached);
+					if (onLoad) onLoad(cached);
 
-				scope.manager.itemEnd(url);
+					scope.manager.itemEnd(url);
 
-			}, 0);
+				}, 0);
+
+			} else {  // if image was in cache but not done loading, wait for it to be loaded before callback
+				cached.addEventListener('load', function (event) {
+
+					if (onLoad) onLoad(cached);
+
+					scope.manager.itemEnd(url);
+
+				}, false);
+			}
 
 			return cached;
 
@@ -34441,43 +34453,65 @@ Object.assign(ImageLoader.prototype, {
 
 		var image = document.createElementNS('http://www.w3.org/1999/xhtml', 'img');
 
-		function onImageLoad() {
+		// ADDED xhr loading to support onprogress
+		// https://github.com/mrdoob/three.js/issues/7734 (follow-up: https://github.com/mrdoob/three.js/issues/10439)
 
-			image.removeEventListener('load', onImageLoad, false);
-			image.removeEventListener('error', onImageError, false);
+		Cache.add(url, image); // The object is set in cache before being loaded so subsequent calls will not request download again. However, it does not have any content and operations (like inversing colors) will fail.
 
-			Cache.add(url, this);
-
-			if (onLoad) onLoad(this);
+		image.addEventListener('load', function (event) {
+			image.isLoaded = true;
+			if (onLoad) onLoad(image);
 
 			scope.manager.itemEnd(url);
 
+		}, false);
+
+
+		var xhr = new XMLHttpRequest();
+		xhr.open('GET', url, true);
+
+		xhr.responseType = 'arraybuffer';
+
+		xhr.onload = function (e) {
+			if (this.status == 200) {
+				var response = this.response;
+				var uInt8Array = new Uint8Array(response);
+				var i = uInt8Array.length;
+				var binaryString = new Array(i);
+				while (i--) {
+					binaryString[i] = String.fromCharCode(uInt8Array[i]);
+				}
+				var data = binaryString.join('');
+
+				var base64 = window.btoa(data);
+
+				var type = this.getResponseHeader('Content-Type');
+				if (type.indexOf(';') > 0) {
+					type = type.substr(0, type.indexOf(';'));
+				}
+				image.src = 'data:' + type + ';base64,' + base64;
+			} else {
+
+				if (onError) onError(e);
+
+				scope.manager.itemError(url);
+
+			}
+		};
+
+		xhr.onprogress = function (event) {
+			if (onProgress) onProgress(event);
 		}
 
-		function onImageError(event) {
-
-			image.removeEventListener('load', onImageLoad, false);
-			image.removeEventListener('error', onImageError, false);
+		xhr.onerror = function (event) {
 
 			if (onError) onError(event);
 
 			scope.manager.itemError(url);
-			scope.manager.itemEnd(url);
 
-		}
+		};
 
-		image.addEventListener('load', onImageLoad, false);
-		image.addEventListener('error', onImageError, false);
-
-		if (url.substr(0, 5) !== 'data:') {
-
-			if (this.crossOrigin !== undefined) image.crossOrigin = this.crossOrigin;
-
-		}
-
-		scope.manager.itemStart(url);
-
-		image.src = url;
+		xhr.send();
 
 		return image;
 
